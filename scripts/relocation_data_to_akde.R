@@ -59,7 +59,6 @@ print(relocation_summary)
 # =======================================================================
 # Fit ctmm model
 # =======================================================================
-
 data.ctmm <- spec_ocelot
   
 data.ctmm.input <- data.ctmm %>% select(Deployment_ID, DateUTC, lon, lat, HDOP, x, y) %>% # Downstream UTC often works better with CTMM functions
@@ -77,29 +76,25 @@ data.fit <- list()
 tictoc::tic()
 data.fit <- lapply(1:length(data.tele), function(i) {ctmm.select(data.tele[[i]], data.guess[[i]], method = 'pHREML')}) # Fleming et al. 2019
 names(data.fit) <- names(data.tele)
-tictoc::toc() # 3-4 minutes
+tictoc::toc()
 
+saveRDS(data.fit, "output/ctmm_fit_object.rds")
 
 model_summary <- purrr::imap_dfr(data.fit, function(fit, id) {
-  
   s <- summary(fit)
   ci <- s$CI
-  
   # Find position tau row
   tau_pos_row <- grep("^τ\\[position\\]", rownames(ci))
-  
   tau_position = if (length(tau_pos_row) == 1) {
     ci[tau_pos_row, "est"]
   } else {
     NA_real_
   }
-  
   tau_position_unit = if (length(tau_pos_row) == 1) {
     rownames(ci)[tau_pos_row]
   } else {
     NA_character_
   }
-  
   # Convert tau[position] to days
   tau_position_days = case_when(
     grepl("\\(hours\\)", tau_position_unit) ~ tau_position / 24,
@@ -107,31 +102,23 @@ model_summary <- purrr::imap_dfr(data.fit, function(fit, id) {
     grepl("\\(minutes\\)", tau_position_unit) ~ tau_position / (60 * 24),
     TRUE ~ NA_real_
   )
-  
   # Velocity tau
   tau_vel_row <- grep("^τ\\[velocity\\]", rownames(ci))
-  
   tau_velocity_min = if (length(tau_vel_row) == 1) {
     ci[tau_vel_row, "est"]
   } else {
     NA_real_
   }
-  
   tibble(
     Deployment_ID = id,
     model = s$name,
-    
     area_km2 = ci["area (square kilometers)", "est"],
-    
     tau_position_days = tau_position_days,
     tau_position_unit = tau_position_unit,
-    
     tau_velocity_min = tau_velocity_min,
-    
     speed_km_day = if ("speed (kilometers/day)" %in% rownames(ci))
       ci["speed (kilometers/day)", "est"]
     else NA_real_,
-    
     diffusion_km2_day = if ("diffusion (square kilometers/day)" %in% rownames(ci))
       ci["diffusion (square kilometers/day)", "est"]
     else NA_real_
@@ -192,6 +179,8 @@ data_ud <- lapply(seq_along(data.tele), function(i) {
 names(data_ud) <- names(data.tele)
 tictoc::toc()
 
+saveRDS(data_ud, "output/ctmm_occurrence_uds.rds")
+
 get_ud_polygons <- function(ud, levels = c(0.95, 0.75, 0.50, 0.25, 0.10)) {
   purrr::map_dfr(levels, function(lvl) {
     x <- as.sf(ud, level.UD = lvl)
@@ -200,11 +189,10 @@ get_ud_polygons <- function(ud, levels = c(0.95, 0.75, 0.50, 0.25, 0.10)) {
   })
 }
 
-ud_polygons <- purrr::imap(
-  data_ud,
-  ~get_ud_polygons(.x) %>%
-    mutate(Deployment_ID = .y)
-)
+ud_polygons <- purrr::imap(data_ud, ~get_ud_polygons(.x) %>% mutate(Deployment_ID = .y))
+
+saveRDS(ud_polygons, "output/ctmm_occurrence_ud_polygons_sf.rds")
+
 
 ud_polygons_df <- ud_polygons |> list_rbind()
 
@@ -243,7 +231,6 @@ ggplot(rank_area_prop, aes(rank, area_prop,
     x = "Component rank",
     y = "Component area / total contour area"
   )
-
 
 rank_area <- ud_polygons_df %>%
   group_by(Deployment_ID, level) %>%
@@ -302,87 +289,6 @@ ud_component_summary <- ud_polygons_df %>%
   )
 print(ud_component_summary)
 
-get_breakpoint <- function(dat) {
-  
-  dat <- dat %>%
-    arrange(desc(area_km2)) %>%
-    mutate(
-      rank = row_number(),
-      log_area = log10(area_km2)
-    )
-  
-  if (nrow(dat) < 10) {
-    return(tibble(
-      breakpoint = NA_real_,
-      breakpoint_relative = NA_real_,
-      slope_1 = NA_real_,
-      slope_2 = NA_real_
-    ))
-  }
-  
-  m <- lm(log_area ~ rank, data = dat)
-  
-  fit <- try(
-    segmented(
-      m,
-      seg.Z = ~rank,
-      psi = list(rank = max(3, round(nrow(dat) * 0.05)))
-    ),
-    silent = TRUE
-  )
-  
-  if (inherits(fit, "try-error")) {
-    return(tibble(
-      breakpoint = NA_real_,
-      breakpoint_relative = NA_real_,
-      slope_1 = NA_real_,
-      slope_2 = NA_real_
-    ))
-  }
-  
-  psi <- summary(fit)$psi
-  
-  if (is.null(psi) || nrow(psi) == 0) {
-    return(tibble(
-      breakpoint = NA_real_,
-      breakpoint_relative = NA_real_,
-      slope_1 = NA_real_,
-      slope_2 = NA_real_
-    ))
-  }
-  
-  bp <- psi[1, "Est."]
-  
-  sl <- try(slope(fit)$rank, silent = TRUE)
-  
-  if (inherits(sl, "try-error") || nrow(sl) < 2) {
-    slope_1 <- NA_real_
-    slope_2 <- NA_real_
-  } else {
-    slope_1 <- sl[1, "Est."]
-    slope_2 <- sl[2, "Est."]
-  }
-  
-  tibble(
-    breakpoint = bp,
-    breakpoint_relative = bp / nrow(dat),
-    slope_1 = slope_1,
-    slope_2 = slope_2
-  )
-}
-
-breakpoints <- ud_polygons_df %>%
-  group_by(Deployment_ID, level) %>%
-  group_modify(~get_breakpoint(.x)) %>%
-  ungroup()
-print(breakpoints, n = 200)
-
-ggplot(
-  breakpoints,
-  aes(level, breakpoint_relative)
-) +
-#  geom_boxplot() +
-  geom_jitter(width = 0.05, alpha = 0.5)
 
 # =================================================================================
 # Test out ctmm occurrence

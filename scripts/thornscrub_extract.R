@@ -37,6 +37,10 @@ ggplot() + geom_spatraster(data = ecomap_stx) +
   geom_sf(data = mcps, fill = NA, linewidth = 1) +
   guides(fill = guide_legend(ncol = 2))
 
+# Export as GeoTIFF with LZW compression to keep file size small
+writeRaster(ecomap_stx, "output/ecomap_stx.tif", 
+  gdal = c("COMPRESS=LZW"), overwrite = TRUE)
+
 # Get categories
 eco_cats <- cats(ecomap_stx)[[1]]
 
@@ -61,7 +65,7 @@ ggplot() + geom_spatraster(data = ecomap_thorn) +
   geom_sf(data = mcps, fill = NA, linewidth = 1) +
   guides(fill = guide_legend(ncol = 1))
 
-ocelot_target_values <- ocelot_legend$value
+ocelot_target_values <- target_legend$value
 
 # Build binary raster (1 = Woody/Thornscrub Cover, 0 = Other Land Cover)
 thornscrub_binary <- ifel(is.na(ecomap_stx), NA, ifel(ecomap_stx %in% target_values, 1, 0)) %>% as.factor()
@@ -82,6 +86,41 @@ writeRaster(thornscrub_binary, "output/south_texas_thornscrub_binary.tif",
   gdal = c("COMPRESS=LZW"), overwrite = TRUE)
 
 # ============================================================================
+# More strict thornscrub naming
+# ============================================================================
+# Search for all woody canopy/brush types ocelots can utilize
+thornscrub_specific_name <- c(7205, 7202, 7204, 7207, 7005, 7002, 7004, 6806)
+target_legend <- eco_cats[eco_cats$value %in% thornscrub_specific_name,]
+target_values <- target_legend$value
+
+ecomap_thorn <- ecomap_stx
+ecomap_thorn[!(ecomap_thorn[] %in% target_values)] <- NA
+ggplot() + geom_spatraster(data = ecomap_thorn) +
+  theme_minimal(base_size = 20) +
+  geom_sf(data = mcps, fill = NA, linewidth = 1) +
+  guides(fill = guide_legend(ncol = 1))
+
+ocelot_target_values <- target_legend$value
+
+# Build binary raster (1 = Woody/Thornscrub Cover, 0 = Other Land Cover)
+thornscrub_binary <- ifel(is.na(ecomap_stx), NA, ifel(ecomap_stx %in% target_values, 1, 0)) %>% as.factor()
+
+# 3. Plot binary map
+ggplot() +
+  geom_spatraster(data = thornscrub_binary) +
+  scale_fill_manual(
+    values = c("1" = "#2e6f40", "0" = "#d9c5b2"),
+    labels = c("0" = "Other / Non-Woody", "1" = "Thornscrub & Woody Cover"),
+    na.value = "transparent") +
+  geom_sf(data = mcps, fill = NA, color = "black", linewidth = 0.8) +
+  theme_minimal(base_size = 18) +
+  theme(legend.position = "right")
+
+# Export as GeoTIFF with LZW compression to keep file size small
+writeRaster(thornscrub_binary, "output/strict_south_texas_thornscrub_binary.tif", 
+  gdal = c("COMPRESS=LZW"), overwrite = TRUE)
+
+# ============================================================================
 # Compare to NLCD wood cover
 # ============================================================================
 
@@ -92,6 +131,13 @@ mcps <- st_transform(mcps, crs = crs(nlcd))
 nlcd_stx <- crop(nlcd, mcps)
 plot(nlcd_stx)
 rm(nlcd)
+
+# Plot NLCD Binary Map
+ggplot() +
+  geom_spatraster(data = nlcd_stx) +
+  geom_sf(data = mcps, fill = NA, color = "black", linewidth = 0.8) +
+  theme_minimal(base_size = 18)
+
 
 # NLCD codes that represent woody structure
 nlcd_woody_codes <- c(41, 42, 43, 52, 90)
