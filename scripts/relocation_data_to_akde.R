@@ -294,10 +294,7 @@ print(ud_component_summary)
 # Test out ctmm occurrence
 # =================================================================================
 
-
 ud_19_sf <- as.sf(ud_19, level.UD = 0.50)
-
-
 
 ud_19 <- occurrence(
   data.tele[["EO19M_1"]],

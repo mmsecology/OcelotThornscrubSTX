@@ -132,6 +132,8 @@ nlcd_stx <- crop(nlcd, mcps)
 plot(nlcd_stx)
 rm(nlcd)
 
+writeRaster(nlcd_stx, "output/nlcd_stx.tif")
+
 # Plot NLCD Binary Map
 ggplot() +
   geom_spatraster(data = nlcd_stx) +

@@ -1,12 +1,7 @@
-library(sf)
-library(terra)
-library(ctmm)
-library(landscapemetrics)
-library(dplyr)
-library(purrr)
-library(ggplot2)
-library(tidyterra)
-library(patchwork)
+library(sf); library(terra); library(ctmm)
+library(landscapemetrics); library(dplyr)
+library(purrr); library(ggplot2)
+library(tidyterra); library(patchwork)
 
 # ---------------------------------------------------------------
 # Get available landsacpe from locations
@@ -47,6 +42,9 @@ envelope <- st_buffer(envelope_hull, dist = 1000) |>  # small margin only, hull 
   st_union() |>
   st_sf(geometry = _)
 mapview::mapview(envelope)
+
+ecomap_stx <- rast("output/south_texas_thornscrub_binary.tif")
+nldc_stx <- rast("output/")
 
 terra::freq(ecomap_stx)  # look for a 0 category, and check if NA cells exist separately
 water_mask <- terra::ifel(nlcd_stx == 11, 1, NA)
@@ -291,20 +289,22 @@ metrics <- purrr::map_dfr(
     )
 )
 
+ggplot(data = metrics) + 
+  geom_boxplot(aes(x = as.factor(buffer_m), y = value)) + 
+  facet_wrap(~metric, scales = "free_y") +
+  theme_bw(base_size = 20)
+
 ggplot() + geom_sf(data = ud_retained_sf, aes(color = Deployment_ID), fill = NA, color = "black", linewidth = 0.8)
 mapview::mapview(ud_retained_sf, zcol = "Deployment_ID")
 
 plots <- purrr::map(
   unique(ud_retained_sf$Deployment_ID),
   function(id) {
-
     ud_i <- ud_retained_sf |>
       filter(Deployment_ID == id)
-
     bb <- st_bbox(
       st_buffer(ud_i, dist = 1000)
     )
-
     ggplot() +
       geom_spatraster(
         data = thornscrub_binary
@@ -372,4 +372,8 @@ metrics_patch <- purrr::map_dfr(
       metrics = patch_metrics
     )
 )
+
+# --------------------------------------------------------------------
+# Create null distribution of UDs
+# --------------------------------------------------------------------
 
