@@ -511,3 +511,205 @@ patch_metrics <- landscapemetrics::calculate_lsm(
   level = "patch",
   metric = c("area", "shape", "core", "contig")
 )
+
+# --------------------------------------------------------------------
+# Get 95% UD and retain polygons up to 90% of total area
+# --------------------------------------------------------------------
+
+ud95_polygons <- purrr::imap(ud_list, ~get_ud_polygons(.x, levels = 0.95) %>% mutate(Deployment_ID = .y))
+#str(ud90_polygons)
+
+ud95_polygons_sf <- purrr::map_dfr(ud95_polygons, identity)
+
+retain_ud_components <- function(x, component_retention = 0.90) {
+  x %>%
+    group_by(Deployment_ID, level) %>%
+    arrange(desc(area_km2), .by_group = TRUE) %>%
+    mutate(
+      total_ud_area_km2 = sum(area_km2),
+      original_n_components = n(),
+      component_rank = row_number(),
+      cumulative_area_km2 = cumsum(area_km2),
+      cumulative_prop = cumulative_area_km2 / total_ud_area_km2
+    ) %>%
+    group_modify(~ {
+      
+      cutoff <- which(.x$cumulative_prop >= component_retention)[1]
+      
+      .x %>%
+        slice_head(n = cutoff) %>%
+        mutate(
+          component_retention = component_retention,
+          retained_n_components = cutoff,
+          retained_area_km2 = sum(area_km2),
+          retained_prop = retained_area_km2 / first(total_ud_area_km2)
+        )
+      
+    }) %>%
+    ungroup()
+}
+
+ud_retained <- retain_ud_components(
+  ud95_polygons_sf,
+  component_retention = 0.90
+)
+
+# Check 1 individual
+ud_retained %>% filter(Deployment_ID == "EO19M_1", level == 0.95) %>%
+  select(
+    area_km2,
+    component_rank,
+    cumulative_prop,
+    component_retention,
+    retained_n_components,
+    retained_prop
+  )
+ud_retained
+
+ud_retained_multipolygon <- ud_retained %>%
+  group_by(Deployment_ID, level) %>%
+  summarise(
+    geometry = st_union(geometry),
+    retained_n_components = n(),
+    retained_area_km2 = sum(area_km2),
+    total_ud_area_km2 = first(total_ud_area_km2),
+    original_n_components = first(original_n_components),
+    retained_prop = sum(area_km2) / first(total_ud_area_km2),
+    .groups = "drop"
+  )
+
+summary(ud_retained_multipolygon)
+
+top_fragmented <- ud_retained_multipolygon %>%
+  arrange(desc(retained_n_components)) %>%
+  slice_head(n = 4)
+
+ud_retained_sf <- st_as_sf(
+  ud_retained_multipolygon,
+  sf_column_name = "geometry",
+  crs = st_crs(ud95_polygons_sf)
+)
+
+class(ud_retained_sf)
+st_geometry_type(ud_retained_sf)
+
+mapview::mapview(ud_retained_sf[ud_retained_sf$Deployment_ID == "EO34M_2",])
+mapview::mapview(ud95_polygons_sf[ud95_polygons_sf$Deployment_ID == "EO34M_2",])
+
+saveRDS(ud_retained_sf, "output/ud_retained_sf.rds")
+
+
+
+# --------------------------------------------------------------------
+# Landscape metrics within UD + buffers
+# --------------------------------------------------------------------
+class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn", "lsm_c_enn_mn", "lsm_c_clumpy")
+
+buffer_sizes <- c(0, 250, 500, 1000, 2000, 3000, 5000)
+terra::plot(thornscrub_binary)
+
+ud_retained_sf <- st_transform(ud_retained_sf, crs = crs(thornscrub_binary))
+
+# Function to crop and mask thornscrub raster by ud
+get_landscape <- function(r, ud_area) {  
+  r_crop <- terra::crop(r, terra::vect(ud_area))
+  r_mask <- terra::mask(r_crop, terra::vect(ud_area))
+  r_mask
+}
+
+calculate_ud_metrics <- function(ud, landscape, buffer_sizes, metrics) {
+  purrr::map_dfr(
+    buffer_sizes,
+    function(buffer_dist) {
+      ud_buffer <- st_buffer(
+        ud,
+        dist = buffer_dist
+      )
+      
+      r <- get_landscape(
+        landscape,
+        ud_buffer
+      )
+      
+      calculate_lsm(
+        r,
+        what = metrics
+      ) %>%
+        filter(class == 1) %>%
+        mutate(
+          Deployment_ID = ud$Deployment_ID,
+          UD_level = ud$level,
+          buffer_m = buffer_dist
+        )
+    }
+  )
+}
+
+metrics <- purrr::map_dfr(
+  seq_len(nrow(ud_retained_sf)),
+  ~ calculate_ud_metrics(
+      ud = ud_retained_sf[.x, ],
+      landscape = thornscrub_binary,
+      buffer_sizes = buffer_sizes,
+      metrics = class_metrics
+    )
+)
+
+ggplot(data = metrics) + 
+  geom_boxplot(aes(x = as.factor(buffer_m), y = value)) + 
+  facet_wrap(~metric, scales = "free_y") +
+  theme_bw(base_size = 20)
+
+ggplot() + geom_sf(data = ud_retained_sf, aes(color = Deployment_ID), fill = NA, color = "black", linewidth = 0.8)
+mapview::mapview(ud_retained_sf, zcol = "Deployment_ID")
+
+plots <- purrr::map(
+  unique(ud_retained_sf$Deployment_ID),
+  function(id) {
+    ud_i <- ud_retained_sf %>% filter(Deployment_ID == id)
+    bb <- st_bbox(st_buffer(ud_i, dist = 1000))
+    ggplot() + geom_spatraster(data = thornscrub_binary) +
+      geom_sf(data = ud_i, fill = "black", alpha = 0.25,
+        color = "black", linewidth = 0.4) +
+      coord_sf(
+        xlim = c(bb["xmin"], bb["xmax"]),
+        ylim = c(bb["ymin"], bb["ymax"])
+      ) + labs(title = id) + theme_classic()
+  }
+)
+
+plots[[4]]
+wrap_plots(plots[1:15])
+wrap_plots(plots[16:31])
+
+# --------------------------------------------------------------------
+# Landscape patch metrics within UD + buffers
+# --------------------------------------------------------------------
+
+patch_metrics <- c("lsm_p_area")
+
+calculate_patch_ud_metrics <- function(ud, landscape, buffer_sizes, metrics) {
+  purrr::map_dfr(
+    buffer_sizes,
+    function(buffer_dist) {
+      ud_buffer <- st_buffer(ud, dist = buffer_dist)
+      r <- get_landscape(landscape, ud_buffer)
+      calculate_lsm(r, what = metrics) %>%
+        mutate(
+          Deployment_ID = ud$Deployment_ID,
+          UD_level = ud$level,
+          buffer_m = buffer_dist
+        )
+    }
+  )
+}
+
+metrics_patch <- purrr::map_dfr(
+  seq_len(nrow(ud_retained_sf)),
+  ~ calculate_patch_ud_metrics(
+      ud = ud_retained_sf[.x, ],
+      landscape = thornscrub_binary,
+      buffer_sizes = buffer_sizes,
+      metrics = patch_metrics
+    )
+)
