@@ -2,7 +2,7 @@ library(sf); library(terra); library(ctmm)
 library(landscapemetrics); library(dplyr)
 library(purrr); library(ggplot2)
 library(tidyterra); library(patchwork)
-library(tictoc)
+library(tictoc); library(Hmisc)
 
 
 # ---------------------------------------------------------------
