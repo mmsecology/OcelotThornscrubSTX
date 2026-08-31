@@ -2,6 +2,7 @@ library(sf); library(terra); library(ctmm)
 library(landscapemetrics); library(dplyr)
 library(purrr); library(ggplot2)
 library(tidyterra); library(patchwork)
+library(tictoc)
 
 
 # ---------------------------------------------------------------
@@ -12,6 +13,8 @@ ud_list <- readRDS("output/ctmm_occurrence_uds.rds")
 ecomap_stx <- rast("output/south_texas_thornscrub_binary.tif")
 nlcd_stx <- rast("output/nlcd_stx.tif")
 thornscrub_binary <- rast("output/south_texas_thornscrub_binary.tif")
+envelope_available <- st_read("output/available_area.shp")
+ud_retained_sf <- readRDS("output/ud_retained_sf.rds")
 
 # ---------------------------------------------------------------
 # Get available landsacpe from locations
@@ -243,6 +246,7 @@ ud_retained_sf <- st_transform(ud_retained_sf, crs = crs(envelope_available))
 
 n_null <- 999
 
+tictoc::tic()
 null_uds <- pmap_dfr(
   list(ud_retained_sf$Deployment_ID, seq_len(nrow(ud_retained_sf))),
   function(dep_id, row_i) {
@@ -261,6 +265,11 @@ null_uds <- pmap_dfr(
     })
   }
 )
+tictoc::toc()
+
+saveRDS(null_uds, "output/null.rds")
+
+crs(null_uds)
 
 # check placement success rate per individual
 null_uds %>% st_drop_geometry() %>% count(Deployment_ID, level) %>% filter(n < n_null * 0.8)
@@ -268,6 +277,8 @@ null_uds %>% st_drop_geometry() %>% count(Deployment_ID, level) %>% filter(n < n
 # Visual test - one individual, one level, a handful of replicates
 test_poly <- ud_retained_sf %>% filter(Deployment_ID == "EO34M_2")
 test_nulls <- map(1:10, ~ random_shift(test_poly, envelope_available, rotate = TRUE)) |> compact()
+
+envelope_available <- st_transform(envelope_available, st_crs(ud_retained_sf))
 
 test_nulls_sf <- test_nulls %>% bind_rows() %>% mutate(rep = row_number())
 
@@ -284,6 +295,7 @@ ggplot() +
 class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn", "lsm_c_enn_mn", "lsm_c_clumpy")
 
 ud_retained_sf <- st_transform(ud_retained_sf, crs = crs(thornscrub_binary))
+crs(ud_retained_sf)
 
 get_landscape <- function(r, ud_area) {  
   r_crop <- terra::crop(r, terra::vect(ud_area))
@@ -307,6 +319,9 @@ observed_metrics <- purrr::map_dfr(
     )
 )
 
+null_uds <- st_transform(null_uds, st_crs(ud_retained_sf))
+same.crs(null_uds, ud_retained_sf)
+
 null_metrics <- purrr::map_dfr(
   seq_len(nrow(null_uds)),
   function(i) {
@@ -318,6 +333,8 @@ null_metrics <- purrr::map_dfr(
       mutate(rep = null_uds$rep[i])
   }
 )
+
+saveRDS(null_metrics, "output/null_ud_metrics.rds")
 
 # ---------------------------------------------------------------
 # Compare observed to null
@@ -337,6 +354,7 @@ comparison <- null_metrics %>%
     ses = (first(observed_value) - mean(value, na.rm = TRUE)) / sd(value, na.rm = TRUE),
     .groups = "drop"
   )
+saveRDS(comparison, "output/obs_null_comparison_uds.rds")
 
 percentile_ranks <- null_metrics %>%
   left_join(
@@ -361,4 +379,89 @@ ggplot(comparison, aes(x = ses)) +
 
 
 
+ggplot(comparison, aes(x = metric, y = ses)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_jitter(aes(color = ses > 0), width = 0.15, size = 3, alpha = 0.8) +
+  stat_summary(fun = mean, geom = "point", size = 5, color = "black") +
+  facet_wrap(~ UD_level) +
+  coord_flip() +
+  scale_color_manual(values = c("FALSE" = "steelblue", "TRUE" = "firebrick"), guide = "none") +
+  theme_bw(base_size = 18) +
+  labs(x = NULL, y = "Standardized effect size")
 
+ggplot(comparison, aes(x = ses, y = reorder(Deployment_ID, ses))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point(size = 3) +
+  facet_grid(UD_level ~ metric, scales = "free_x") +
+  theme_bw(base_size = 14) +
+  labs(x = "Standardized effect size", y = NULL)
+
+ggplot(comparison, aes(x = ses)) +
+  geom_density(fill = "grey80", alpha = 0.6) +
+  geom_rug(sides = "b") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  facet_grid(UD_level ~ metric, scales = "free_x") +
+  theme_bw(base_size = 18)
+
+ggplot(comparison, aes(x = ses)) +
+  geom_density(aes(y = after_stat(scaled)), fill = "grey80", color = "grey30", alpha = 0.6) +
+  geom_rug(sides = "b", alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  facet_grid(UD_level ~ metric, scales = "free_x") +
+  theme_bw(base_size = 18) +
+  labs(x = "Standardized effect size", y = "Scaled density")
+
+ggplot(comparison, aes(x = metric, y = ses)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_jitter(aes(color = ses > 0), width = 0.15, size = 3, alpha = 0.8) +
+  stat_summary(fun.data = mean_cl_boot, geom = "pointrange", size = 0.8, color = "black") +
+  facet_wrap(~ UD_level) +
+  coord_flip() +
+  scale_color_manual(values = c("FALSE" = "steelblue", "TRUE" = "firebrick"), guide = "none") +
+  theme_bw(base_size = 18) +
+  labs(x = NULL, y = "Standardized effect size")
+
+# Pre-compute bootstrapped mean + CI per metric/level
+summary_df <- comparison %>%
+  group_by(metric, UD_level) %>%
+  dplyr::summarize(
+    boot = list(Hmisc::smean.cl.boot(ses)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    mean_ses = map_dbl(boot, ~ .x[["Mean"]]),
+    lower    = map_dbl(boot, ~ .x[["Lower"]]),
+    upper    = map_dbl(boot, ~ .x[["Upper"]])
+  ) %>%
+  select(-boot) %>%
+  mutate(
+    sig = case_when(
+      lower > 0 ~ "positive",
+      upper < 0 ~ "negative",
+      TRUE ~ "ns"
+    )
+  )
+
+  ## GO WITH THIS ONE; still need to change a few things
+ggplot() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_jitter(
+    data = comparison,
+    aes(x = metric, y = ses, color = ses > 0),
+    width = 0.15, size = 3, alpha = 0.5
+  ) +
+  geom_pointrange(
+    data = summary_df,
+    aes(x = metric, y = mean_ses, ymin = lower, ymax = upper, fill = sig),
+    shape = 23, size = 1, linewidth = 1, color = "black"
+  ) +
+  facet_wrap(~ UD_level) +
+  coord_flip() +
+  scale_color_manual(values = c("FALSE" = "steelblue", "TRUE" = "firebrick"), guide = "none") +
+  scale_fill_manual(
+    values = c("positive" = "firebrick", "negative" = "steelblue", "ns" = "grey40"),
+    guide = "none"
+  ) +
+  theme_bw(base_size = 18) +
+  labs(x = NULL, y = "Standardized effect size")
+#e.g. "points are per-individual SES (observed relative to n = 999 individual-specific null UDs); black points/ranges are bootstrapped mean ± 95% CI across individuals (n = 28)."
