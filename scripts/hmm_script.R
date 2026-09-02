@@ -1,5 +1,6 @@
 library(momentuHMM); library(dplyr)
 library(sf); library(lubridate)
+library(ggplot2)
 
 # Input created in relocation_data_to_ctmm.R
 # Regularizes hourly fixes into bursts if longer than 6 hours
@@ -18,6 +19,10 @@ prep_data <- prepData(
   type = "UTM",              # projected coordinates, not lon/lat
   coordNames = c("x", "y")
 )
+
+prep_data$step_km <- prep_data$step / 1000
+prep_data_km <- prep_data %>% rename(step_orig = step) %>% rename(step = step_km)
+
 
 # quick check - distribution of step lengths and turning angles
 summary(prep_data$step)
