@@ -36,6 +36,7 @@ data_adj <- prep_data_km %>% mutate(step = step_adj)  # build once, reuse everyw
 dists <- list(step = "gamma", angle = "vm")
 formula_hour <- ~cosinor(hour, period = 24)
 
+saveRDS(data_adj, "output/objects/hmm_data_adj.rds")
 # ---------------------------------------------------------------
 # 2-state NULL
 # ---------------------------------------------------------------
