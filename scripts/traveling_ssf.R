@@ -2,7 +2,7 @@ library(amt); library(dplyr); library(lubridate); library(sf)
 library(momentuHMM)
 
 # Read in needed data and outputs
-hmm_input <- readRDS("output/hmm_input.rds") %>% rename(BurstID = burst)
+hmm_input <- readRDS("output/objects/hmm_input.rds") %>% rename(BurstID = burst)
 data_adj <- readRDS("output/objects/hmm_data_adj.rds")
 hmm_model_list <- readRDS("output/objects/hmm_model_list.rds")
 m3_cosinor <- hmm_model_list[[4]]
