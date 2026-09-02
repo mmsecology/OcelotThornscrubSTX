@@ -64,7 +64,7 @@ comparison <- null_metrics %>%
     by = c("Deployment_ID", "UD_level", "metric")
   ) %>%
   group_by(Deployment_ID, UD_level, metric) %>%
-  summarize(
+  dplyr::summarize(
     observed_value = first(observed_value),
     null_mean = mean(value, na.rm = TRUE),
     null_sd = sd(value, na.rm = TRUE),
@@ -72,6 +72,7 @@ comparison <- null_metrics %>%
     ses = (first(observed_value) - mean(value, na.rm = TRUE)) / sd(value, na.rm = TRUE),
     .groups = "drop"
   )
+
 saveRDS(comparison, "output/obs_null_comparison_uds.rds")
 comparison <- readRDS("output/obs_null_comparison_uds.rds")
 
@@ -81,7 +82,7 @@ percentile_ranks <- null_metrics %>%
     by = c("Deployment_ID", "UD_level", "metric")
   ) %>%
   group_by(Deployment_ID, UD_level, metric) %>%
-  summarize(
+  dplyr::summarize(
     observed_value = first(observed_value),
     percentile_rank = mean(value <= observed_value, na.rm = TRUE),
     .groups = "drop"
@@ -159,16 +160,16 @@ ud_comp_fig <- ggplot() +
   facet_wrap(~ UD_level, labeller = as_labeller(ud_labels)) +
   scale_x_discrete(labels = metric_labels) +
   coord_flip() +
-  scale_color_manual(values = c("FALSE" = "#002c4c", "TRUE" = "#4c3b00"), guide = "none") +
+  scale_color_manual(values = c("FALSE" = "#59a89c", "TRUE" = "#f0c571"), guide = "none") +
   scale_fill_manual(
-    values = c("positive" = "#4c3b00", "negative" = "#002c4c", "ns" = "grey40"),
+    values = c("positive" = "#f0c571", "negative" = "#59a89c", "ns" = "grey40"),
     guide = "none") +
   theme_bw(base_size = 25) +
   labs(x = NULL, y = "Standardized effect size")
 
 ud_comp_fig
 
-ggsave("output/fig_ud_comp.pdf", plot = ud_comp_fig)
+#ggsave("output/figures/fig_ud_comp.pdf", plot = ud_comp_fig, width = 8.5, height = 11, units = "in")
 
 
 ## -----------------------------------------------------------------------
@@ -198,14 +199,6 @@ ud_summary_wide <- ud_summary %>%
 ## -----------------------------------------------------------------------
 ## 2. UD COMPARISON PLOT: one panel per metric, core-use vs. full range
 ## -----------------------------------------------------------------------
-metric_labels_units <- c(
-  "area_mn"  = "Mean patch area (ha)",
-  "cai_mn"   = "Core area index (%)",
-  "clumpy"   = "Aggregation (CLUMPY)",
-  "enn_mn"   = "Mean nearest-neighbor distance (m)",
-  "pland"    = "Percent thornscrub (%)",
-  "shape_mn" = "Mean shape complexity"
-)
 
 # Valid theoretical range for the bounded metrics only —
 # area_mn and enn_mn have no fixed bound (landscape-dependent), so omitted
@@ -225,9 +218,9 @@ bounds_df <- tibble::tribble(
 
 plot_ud_dumbbell <- function(df) {
   ggplot(df, aes(x = factor(UD_level, levels = c("0.5", "0.95")), y = mean_val)) +
-    geom_hline(data = bounds_df, aes(yintercept = bound),
-               linetype = "dotted", color = "grey60") +
-    geom_pointrange(aes(ymin = lwr, ymax = upr), size = 1.5) +
+    #geom_hline(data = bounds_df, aes(yintercept = bound),
+     #          linetype = "dotted", color = "grey60") +
+    geom_pointrange(aes(ymin = lwr, ymax = upr), size = 0.8) +
     facet_wrap(~metric, scales = "free", ncol = 2, labeller = as_labeller(metric_labels_units)) +
     scale_x_discrete(labels = ud_labels) +
     labs(x = NULL, y = NULL) +
@@ -235,4 +228,5 @@ plot_ud_dumbbell <- function(df) {
 }
 
 plot_ud_dumbbell(ud_summary)
-ggsave("output/fig_ud_dumbbell.pdf", plot = plot_ud_dumbbell(ud_summary))
+
+#ggsave("output/UD_metrics_natural_scale.pdf", width = 8.5, height = 11, units = "in")
