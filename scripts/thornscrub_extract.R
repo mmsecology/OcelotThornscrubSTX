@@ -89,7 +89,7 @@ writeRaster(thornscrub_binary, "output/south_texas_thornscrub_binary.tif",
 # More strict thornscrub naming
 # ============================================================================
 # Search for all woody canopy/brush types ocelots can utilize
-thornscrub_specific_name <- c(7205, 7202, 7204, 7207, 7005, 7002, 7004, 6806)
+thornscrub_specific_name <- c(7205, 7202, 7204, 7207, 7005, 7002, 7004)
 target_legend <- eco_cats[eco_cats$value %in% thornscrub_specific_name,]
 target_values <- target_legend$value
 

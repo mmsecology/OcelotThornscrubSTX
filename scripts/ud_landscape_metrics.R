@@ -291,8 +291,8 @@ ggplot() +
 # ---------------------------------------------------------------
 # Simplified landscape metrics run
 # ---------------------------------------------------------------
-
-class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn", "lsm_c_enn_mn", "lsm_c_clumpy")
+class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn",
+                    "lsm_c_enn_mn", "lsm_c_clumpy", "lsm_c_ed", "lsm_c_cohesion")
 
 ud_retained_sf <- st_transform(ud_retained_sf, crs = crs(thornscrub_binary))
 crs(ud_retained_sf)
@@ -338,6 +338,45 @@ saveRDS(null_metrics, "output/null_ud_metrics.rds")
 null_metrics <- readRDS("output/null_ud_metrics.rds")
 
 # ---------------------------------------------------------------
+# Run landscape metrics on strict thornscrub definition 
+# ---------------------------------------------------------------
+
+thornscrub_binary_strict <- rast("output/strict_south_texas_thornscrub_binary.tif")
+envelope_available <- st_read("output/available_area.shp")
+ud_retained_sf <- readRDS("output/objects/ud_retained_sf.rds")
+null_uds <- readRDS("output/objects/null.rds")
+null_uds <- st_transform(null_uds, st_crs(ud_retained_sf))
+
+# Same crs check
+same.crs(null_uds, ud_retained_sf)
+same.crs(ud_retained_sf, thornscrub_binary_strict)
+
+observed_metrics <- purrr::map_dfr(
+  seq_len(nrow(ud_retained_sf)),
+  ~ calculate_ud_metrics(
+      ud = ud_retained_sf[.x, ],
+      landscape = thornscrub_binary_strict,
+      metrics = class_metrics
+    )
+)
+
+null_metrics <- purrr::map_dfr(
+  seq_len(nrow(null_uds)),
+  function(i) {
+    calculate_ud_metrics(
+      ud = null_uds[i, ],
+      landscape = thornscrub_binary_strict,
+      metrics = class_metrics
+    ) %>%
+      mutate(rep = null_uds$rep[i])
+  }
+)
+
+saveRDS(observed_metrics, "output/obs_metrics_strict_thornscrub.rds")
+saveRDS(null_metrics, "output/null_metrics_strict_thornscrub.rds")
+
+
+# ---------------------------------------------------------------
 # Compare observed to null
 # ---------------------------------------------------------------
 
@@ -355,6 +394,7 @@ comparison <- null_metrics %>%
     ses = (first(observed_value) - mean(value, na.rm = TRUE)) / sd(value, na.rm = TRUE),
     .groups = "drop"
   )
+
 saveRDS(comparison, "output/obs_null_comparison_uds.rds")
 comparison <- readRDS("output/obs_null_comparison_uds.rds")
 
