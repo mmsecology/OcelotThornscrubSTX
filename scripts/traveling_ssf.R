@@ -25,7 +25,7 @@ stopifnot(nrow(data_adj) == length(viterbi(m3_cosinor)))
 data_adj$state <- viterbi(m3_cosinor)
 data_adj$state_label <- recode(as.character(data_adj$state),
                                 "1" = "local_movement", "2" = "encamped", "3" = "traveling")
-table(data_adj$state_label)  # sanity check against known ~23%/40%/37% split
+table(data_adj$state_label)
 
 # Attach animal ID
 animal_map <- hmm_input %>% st_drop_geometry() %>% distinct(BurstID, Deployment_ID)
@@ -38,6 +38,7 @@ data_adj <- data_adj %>%
             by = c("ID" = "BurstID", "timestamp" = "timestamp"))
 stopifnot(nrow(data_adj) == n_before)  # catches join-induced duplication
 
+## --- Create traveling only dataset --- ##
 traveling_only <- data_adj %>% filter(state_label == "traveling")
 nrow(traveling_only)
 
@@ -52,7 +53,6 @@ traveling_only <- traveling_only %>%
 sum(is.na(traveling_only$longitude))  # should be 0
 nrow(traveling_only)  # compare to pre-join row count -- should be unchanged
 
-
 # Reproject lon/lat (WGS84) into the raster's CRS
 traveling_pts_sf <- traveling_only %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) %>%
@@ -62,6 +62,56 @@ mapview::mapview(traveling_pts_sf)
 coords <- st_coordinates(traveling_pts_sf)
 traveling_only$x_proj <- coords[, 1]
 traveling_only$y_proj <- coords[, 2]
+
+## --- Create local only dataset --- ##
+local_only <- data_adj %>% filter(state_label == "local_movement")
+nrow(local_only)
+
+# Pull lon/lat from hmm_input and join onto local_only
+local_only <- local_only %>%
+  left_join(
+    hmm_input %>% st_drop_geometry() %>% select(BurstID, timestamp, longitude, latitude),
+    by = c("ID" = "BurstID", "timestamp" = "timestamp")
+  )
+
+# Confirm join worked and didn't duplicate rows
+sum(is.na(local_only$longitude))  # should be 0
+nrow(local_only)  # compare to pre-join row count -- should be unchanged
+
+# Reproject lon/lat (WGS84) into the raster's CRS
+local_pts_sf <- local_only %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) %>%
+  st_transform(crs = target_crs)
+mapview::mapview(local_pts_sf)
+
+coords <- st_coordinates(local_pts_sf)
+local_only$x_proj <- coords[, 1]
+local_only$y_proj <- coords[, 2]
+
+## --- Create encamped only dataset --- ##
+encamped_only <- data_adj %>% filter(state_label == "encamped")
+nrow(encamped_only)
+
+# Pull lon/lat from hmm_input and join onto encamped_only
+encamped_only <- encamped_only %>%
+  left_join(
+    hmm_input %>% st_drop_geometry() %>% select(BurstID, timestamp, longitude, latitude),
+    by = c("ID" = "BurstID", "timestamp" = "timestamp")
+  )
+
+# Confirm join worked and didn't duplicate rows
+sum(is.na(encamped_only$longitude))  # should be 0
+nrow(encamped_only)  # compare to pre-join row count -- should be unchanged
+
+# Reproject lon/lat (WGS84) into the raster's CRS
+encamped_pts_sf <- encamped_only %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) %>%
+  st_transform(crs = target_crs)
+mapview::mapview(encamped_pts_sf)
+
+coords <- st_coordinates(encamped_pts_sf)
+encamped_only$x_proj <- coords[, 1]
+encamped_only$y_proj <- coords[, 2]
 
 # -------------------------------------------------------------------
 # Used vs available points from AMT for traveling only
