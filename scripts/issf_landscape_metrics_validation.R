@@ -320,9 +320,19 @@ sum(is.na(pland_values$focal_mean))
 summary(pland_values$focal_mean)
 plot(pland_surface)
 
+writeRaster(pland_surface, "output/rasters/pland_raster_610m.tif")
 
+w <- focalMat(thornscrub_cropped_final, d = 164, type = "circle")
+w_binary <- ifelse(w > 0, 1, 0)
+pland_surface <- focal(thornscrub_cropped_final, w = w_binary, fun = mean, na.rm = TRUE) * 100
 
+pts_vect <- vect(pts_sf)
+pland_values <- terra::extract(pland_surface, pts_vect)
+sum(is.na(pland_values$focal_mean))
+summary(pland_values$focal_mean)
+plot(pland_surface)
 
+writeRaster(pland_surface, "output/rasters/pland_raster_164m.tif")
 
 # -------------------------------------------------------------------
 # 2. Validate against sample_lsm() at the same test points
@@ -694,6 +704,221 @@ wrap_plots(plot_list_ed, ncol = 3)
 
 
 
+# -------------------------------------------------------------------
+# CAI_MN, clipped/weighted version
+# -------------------------------------------------------------------
+core_cell_rast <- core_cells  # binary raster: 1 = core cell, 0 = not, from earlier
+
+cai_mn_surface_v2 <- focal(c(patch_id_rast, core_cell_rast), w = w_binary, fun = function(x, ...) {
+  n <- length(x) / 2
+  ids <- x[1:n]
+  core_vals <- x[(n+1):(2*n)]
+  valid <- !is.na(ids)
+  if (sum(valid) == 0) return(0)
+  mean(core_vals[valid], na.rm = TRUE) * 100  # % of in-window thornscrub cells that are core
+}, na.rm = TRUE)
+
+library(terra); library(landscapemetrics); library(sf); library(dplyr); library(tidyr)
+
+# -------------------------------------------------------------------
+# 1. Rebuild core_cells and total_edges on the test crop (if not already present)
+# -------------------------------------------------------------------
+rook_kernel <- matrix(c(0,1,0, 1,0,1, 0,1,0), nrow=3)
+neighbor_sum <- focal(test_crop, w = rook_kernel, fun = sum, na.rm = TRUE)
+core_cells <- ifel(test_crop == 1 & neighbor_sum == 4, 1, 0)
+names(core_cells) <- "is_core"
+
+m <- as.matrix(test_crop, wide = TRUE)
+nr <- nrow(m); nc <- ncol(m)
+horiz_diff <- matrix(0, nr, nc); horiz_diff[, 1:(nc-1)] <- (m[, 1:(nc-1)] != m[, 2:nc]) * 1
+vert_diff <- matrix(0, nr, nc); vert_diff[1:(nr-1), ] <- (m[1:(nr-1), ] != m[2:nr, ]) * 1
+horiz_diff[is.na(horiz_diff)] <- 0; vert_diff[is.na(vert_diff)] <- 0
+total_edges <- rast(horiz_diff + vert_diff, extent = ext(test_crop), crs = crs(test_crop))
+
+w <- focalMat(test_crop, d = 610, type = "circle")  # match whatever radius your test crop used
+w_binary <- ifelse(w > 0, 1, 0)
+cell_size <- res(test_crop)[1]
+
+# -------------------------------------------------------------------
+# 2. CAI_MN v2 -- simple, no patch lookup
+# -------------------------------------------------------------------
+cai_mn_v2 <- focal(core_cells, w = w_binary, fun = mean, na.rm = TRUE) * 100
+
+# -------------------------------------------------------------------
+# 3. SHAPE_MN v2 -- windowed perimeter/area using stacked layers
+# -------------------------------------------------------------------
+stacked <- c(test_crop, total_edges)
+names(stacked) <- c("cover", "edges")
+
+shape_mn_v2 <- focal(stacked, w = w_binary, fun = function(x, ...) {
+  n <- length(x) / 2
+  cover <- x[1:n]; edges <- x[(n+1):(2*n)]
+  thorn_idx <- cover == 1
+  if (sum(thorn_idx, na.rm=TRUE) == 0) return(0)
+  area_m2 <- sum(thorn_idx, na.rm=TRUE) * cell_size^2
+  perimeter_m <- sum(edges[thorn_idx], na.rm=TRUE) * cell_size
+  0.25 * perimeter_m / sqrt(area_m2)
+}, na.rm = TRUE)
+
+plot(c(cai_mn_v2, shape_mn_v2), main = c("CAI_MN v2", "SHAPE_MN v2"))
+
+# -------------------------------------------------------------------
+# 4. Validate against sample_lsm()
+# -------------------------------------------------------------------
+direct_check_v2 <- sample_lsm(test_crop, y = test_pts_sf, size = 610,
+                               what = c("lsm_c_cai_mn", "lsm_c_shape_mn"),
+                               shape = "circle", return_raster = FALSE) %>%
+  filter(class == 1) %>%
+  select(plot_id, metric, value) %>%
+  pivot_wider(names_from = metric, values_from = value) %>%
+  rename(point_id = plot_id)
+
+focal_check_v2 <- terra::extract(c(cai_mn_v2, shape_mn_v2), vect(test_pts_sf))
+names(focal_check_v2) <- c("ID", "cai_mn_v2", "shape_mn_v2")
+
+comparison_v2 <- direct_check_v2 %>% left_join(focal_check_v2, by = c("point_id"="ID"))
+print(comparison_v2)
+
+# check what extract() actually returned before assigning names
+test_extract <- terra::extract(c(cai_mn_v2, shape_mn_v2), vect(test_pts_sf))
+str(test_extract)
+ncol(test_extract)  # should be 3 (ID, cai_mn_v2, shape_mn_v2) -- if n
+
+# pre-multiply: only keep edge counts where the cell is actually thornscrub
+edges_masked <- total_edges * (test_crop == 1)  # 0 wherever not thornscrub, real edge count where thornscrub
+
+# now two SEPARATE single-layer focal sums, combined via simple raster algebra afterward
+thorn_cell_count <- focal(test_crop, w = w_binary, fun = sum, na.rm = TRUE)  # # thornscrub cells in window
+edge_sum_in_window <- focal(edges_masked, w = w_binary, fun = sum, na.rm = TRUE)  # summed edge count, thornscrub cells only
+
+area_m2 <- thorn_cell_count * cell_size^2
+perimeter_m <- edge_sum_in_window * cell_size
+
+shape_mn_v2_fixed <- ifel(area_m2 > 0, 0.25 * perimeter_m / sqrt(area_m2), 0)
+
+plot(shape_mn_v2_fixed, main = "SHAPE_MN v2 (fixed)")
+
+
+focal_check_shape_fixed <- terra::extract(shape_mn_v2_fixed, vect(test_pts_sf))
+names(focal_check_shape_fixed) <- c("ID", "shape_mn_v2_fixed")
+
+comparison_shape_fixed <- direct_check_v2 %>% left_join(focal_check_shape_fixed, by = c("point_id"="ID"))
+print(comparison_shape_fixed)
+
+pt6 <- test_pts_sf[6, ]
+buf6 <- st_buffer(pt6, 610)
+ggplot() +
+  geom_raster(data = crop_df, aes(x=x, y=y, fill=factor(thornscrub))) +
+  scale_fill_manual(values=c("0"="grey85","1"="#4daf4a"), guide="none") +
+  geom_sf(data=buf6, fill=NA, color="red", linewidth=0.8, inherit.aes=FALSE) +
+  coord_sf(datum=NA) + theme_minimal()
+
+focal_check_cai_v2 <- terra::extract(cai_mn_v2, vect(test_pts_sf))
+names(focal_check_cai_v2) <- c("ID", "cai_mn_v2")
+
+comparison_cai_v2 <- comparison_shape_fixed %>% 
+  select(point_id, cai_mn) %>%
+  left_join(focal_check_cai_v2, by = c("point_id"="ID"))
+
+print(comparison_cai_v2)
+
+encoded <- patch_id_rast * 2 + core_cells
+
+cai_mn_v3 <- focal(encoded, w = w_binary, fun = function(x, ...) {
+  x <- na.omit(x)
+  if (length(x) == 0) return(0)
+  pid <- floor(x / 2)
+  is_core <- x %% 2
+  agg <- tapply(is_core, pid, mean)
+  mean(agg) * 100
+}, na.rm = TRUE)
+
+ext(patch_id_rast)
+ext(core_cells)
+res(patch_id_rast)
+res(core_cells)
+
+base_rast <- test_crop
+
+thornscrub_patches <- base_rast
+thornscrub_patches[thornscrub_patches != 1] <- NA
+patch_id_rast <- patches(thornscrub_patches, directions = 8)
+
+rook_kernel <- matrix(c(0,1,0, 1,0,1, 0,1,0), nrow=3)
+neighbor_sum <- focal(base_rast, w = rook_kernel, fun = sum, na.rm = TRUE)
+core_cells <- ifel(base_rast == 1 & neighbor_sum == 4, 1, 0)
+names(core_cells) <- "is_core"
+
+ext(patch_id_rast) == ext(core_cells)  # should now match
+
+encoded <- patch_id_rast * 2 + core_cells
+
+cai_mn_v3 <- focal(encoded, w = w_binary, fun = function(x, ...) {
+  x <- na.omit(x)
+  if (length(x) == 0) return(0)
+  pid <- floor(x / 2)
+  is_core <- x %% 2
+  agg <- tapply(is_core, pid, mean)
+  mean(agg) * 100
+}, na.rm = TRUE)
+
+focal_check_cai_v3 <- terra::extract(cai_mn_v3, vect(test_pts_sf))
+names(focal_check_cai_v3) <- c("ID", "cai_mn_v3")
+
+comparison_cai_v3 <- comparison_cai_v2 %>% left_join(focal_check_cai_v3, by = c("point_id"="ID"))
+print(comparison_cai_v3)
+
+# rebuild on FULL cropped raster, not test_crop
+base_rast <- thornscrub_cropped_final
+
+thornscrub_patches_full <- base_rast
+thornscrub_patches_full[thornscrub_patches_full != 1] <- NA
+patch_id_rast_full <- patches(thornscrub_patches_full, directions = 8)
+
+rook_kernel <- matrix(c(0,1,0, 1,0,1, 0,1,0), nrow=3)
+neighbor_sum_full <- focal(base_rast, w = rook_kernel, fun = sum, na.rm = TRUE)
+core_cells_full <- ifel(base_rast == 1 & neighbor_sum_full == 4, 1, 0)
+names(core_cells_full) <- "is_core"
+
+encoded_full <- patch_id_rast_full * 2 + core_cells_full
+
+tictoc::tic("cai_mn_v3 full")
+cai_mn_surface_v3 <- focal(encoded_full, w = w_binary, fun = function(x, ...) {
+  x <- na.omit(x)
+  if (length(x) == 0) return(0)
+  pid <- floor(x / 2); is_core <- x %% 2
+  mean(tapply(is_core, pid, mean)) * 100
+}, na.rm = TRUE)
+tictoc::toc()
+
+# shape_mn fix, full raster
+m_full <- as.matrix(base_rast, wide = TRUE)
+nr <- nrow(m_full); nc <- ncol(m_full)
+horiz_diff <- matrix(0, nr, nc); horiz_diff[, 1:(nc-1)] <- (m_full[, 1:(nc-1)] != m_full[, 2:nc]) * 1
+vert_diff <- matrix(0, nr, nc); vert_diff[1:(nr-1), ] <- (m_full[1:(nr-1), ] != m_full[2:nr, ]) * 1
+horiz_diff[is.na(horiz_diff)] <- 0; vert_diff[is.na(vert_diff)] <- 0
+total_edges_full <- rast(horiz_diff + vert_diff, extent = ext(base_rast), crs = crs(base_rast))
+edges_masked_full <- total_edges_full * (base_rast == 1)
+
+tictoc::tic("shape_mn full")
+thorn_cell_count <- focal(base_rast, w = w_binary, fun = sum, na.rm = TRUE)
+edge_sum_full <- focal(edges_masked_full, w = w_binary, fun = sum, na.rm = TRUE)
+area_m2_full <- thorn_cell_count * cell_size^2
+perimeter_m_full <- edge_sum_full * cell_size
+shape_mn_surface_v2 <- ifel(area_m2_full > 0, 0.25 * perimeter_m_full / sqrt(area_m2_full), 0)
+tictoc::toc()
+
+writeRaster(cai_mn_surface_v3, "output/objects/surface_cai_mn_v3_164m.tif", overwrite = TRUE)
+writeRaster(shape_mn_surface_v2, "output/objects/surface_shape_mn_v2_164m.tif", overwrite = TRUE)
+
+
+
+
+
+
+
+
+
 
 
 
@@ -715,58 +940,82 @@ wrap_plots(plot_list_ed, ncol = 3)
 # values(thornscrub_cropped) <- values(thornscrub_cropped)
 # inMemory(thornscrub_cropped)  
 
+# =====================================================================
+# Run full steps using LSM
+# =====================================================================
+
 # # ---------------------------------------------------------------
 # # Batched extraction 
 # # ---------------------------------------------------------------
-# class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn",
-#                     "lsm_c_ed", "lsm_c_cohesion", "lsm_c_lpi", "lsm_c_gyrate_mn", "lsm_c_pd", "lsm_c_np")
-# batch_size <- 500
+class_metrics <- c("lsm_c_pland", "lsm_c_area_mn", "lsm_c_shape_mn", "lsm_c_cai_mn",
+                    "lsm_c_ed", "lsm_c_cohesion", "lsm_c_lpi", "lsm_c_gyrate_mn", "lsm_c_pd", "lsm_c_np")
+batch_size <- 1500
 
-# run_batched <- function(radius, pts, raster, metrics, batch_size) {
-#   n_batches <- ceiling(nrow(pts) / batch_size)
-#   out <- vector("list", n_batches)
+run_batched <- function(radius, pts, raster, metrics, batch_size) {
+  n_batches <- ceiling(nrow(pts) / batch_size)
+  out <- vector("list", n_batches)
 
-#   for (b in 1:n_batches) {
-#     idx <- ((b - 1) * batch_size + 1):min(b * batch_size, nrow(pts))
-#     batch_result <- sample_lsm(
-#       landscape = raster, y = pts[idx, ],
-#       size = radius, what = metrics, shape = "circle", return_raster = FALSE
-#     ) %>% filter(class == 1)
+  for (b in 1:n_batches) {
+    idx <- ((b - 1) * batch_size + 1):min(b * batch_size, nrow(pts))
+    batch_result <- sample_lsm(
+      landscape = raster, y = pts[idx, ],
+      size = radius, what = metrics, shape = "circle", return_raster = FALSE
+    ) %>% filter(class == 1)
 
-#     batch_result$point_id <- idx[batch_result$plot_id]
-#     out[[b]] <- batch_result
+    batch_result$point_id <- idx[batch_result$plot_id]
+    out[[b]] <- batch_result
 
-#     gc()
-#     cat("  Radius", radius, "- batch", b, "of", n_batches, "done at", format(Sys.time()), "\n")
-#   }
-#   bind_rows(out) %>% mutate(buffer_radius = radius)
-# }
+    gc()
+    cat("  Radius", radius, "- batch", b, "of", n_batches, "done at", format(Sys.time()), "\n")
+  }
+  bind_rows(out) %>% mutate(buffer_radius = radius)
+}
 
-# ## --- Create subsample --- ##
-# set.seed(1)
-# subsample_pooled <- pts_sf_all %>%
-#   st_drop_geometry() %>%
-#   mutate(row_id = row_number()) %>%
-#   group_by(state, case_) %>%
-#   slice_sample(prop = 0.10) %>%  # 10% stratified by state and used/available
-#   ungroup() %>%
-#   pull(row_id)
+run_batched_checkpointed <- function(radius, pts, raster, metrics, batch_size, checkpoint_every = 50,
+                                      checkpoint_path = "output/objects/run_batched_checkpoint.rds") {
+  n_batches <- ceiling(nrow(pts) / batch_size)
+  out <- vector("list", n_batches)
 
-# pts_sf_subsample <- pts_sf_all[subsample_pooled, ]
-# nrow(pts_sf_subsample)  # sanity check on resulting size
-# table(pts_sf_subsample$state, pts_sf_subsample$case_)  # confirm proportions preserved
+  for (b in 1:n_batches) {
+    idx <- ((b - 1) * batch_size + 1):min(b * batch_size, nrow(pts))
+    batch_result <- sample_lsm(
+      landscape = raster, y = pts[idx, ],
+      size = radius, what = metrics, shape = "circle", return_raster = FALSE
+    ) %>% filter(class == 1)
 
-# extraction_list <- list()
-# for (nm in names(radii_test)) {
-#   cat("Starting:", nm, "radius =", radii_test[[nm]], "at", format(Sys.time()), "\n")
-#   extraction_list[[nm]] <- run_batched(radii_test[[nm]], pts_sf_subsample, thornscrub_cropped, class_metrics, batch_size)
-#   saveRDS(extraction_list, "output/objects/radii_variation_test_subsample.rds")
-#   cat("Completed:", nm, "at", format(Sys.time()), "\n\n")
-# }
+    batch_result$point_id <- idx[batch_result$plot_id]
+    out[[b]] <- batch_result
 
-# extraction_wide <- lapply(extraction_list, function(x) {
-# x %>% select(point_id, metric, value) %>% pivot_wider(names_from = metric, values_from = value)
-# })
+    gc()
+    if (b %% checkpoint_every == 0 || b == n_batches) {
+      saveRDS(list(completed_through = b, data = bind_rows(out[1:b])), checkpoint_path)
+      cat("  Checkpoint saved at batch", b, "of", n_batches, "\n")
+    }
+    cat("  Radius", radius, "- batch", b, "of", n_batches, "done at", format(Sys.time()), "\n")
+  }
+  bind_rows(out) %>% mutate(buffer_radius = radius)
+}
+
+full_run <- run_batched(610, pts_sf, thornscrub_cropped_final, class_metrics, batch_size)
+full_run <- run_batched_checkpointed(610, pts_sf, thornscrub_cropped_final, class_metrics, batch_size)
+
+# 9/17/26 - ran through batch 350 out of 957; "output/objects/run_batched_checkpoint.rds"
+# CHANGE CODE TO RESTART AT BATCH 351
+
+check <- readRDS("E:/GitProjects/OcelotThornscrubSTX/output/objects/run_batched_checkpoint.rds")
+wide_check <- check[[2]] %>% select(point_id, metric, value) %>% pivot_wider(names_from = metric, values_from = value)
+nrow(pts_sf_subset_350) - nrow(wide_check)
+summary(wide_check)
+
+n_completed <- 350 * batch_size  # use whatever batch_size you actually ran with for this partial run
+
+pts_sf_subset_350 <- pts_sf[1:n_completed, ]
+
+nrow(pts_sf_subset_350)  # sanity check
+max(wide_check$point_id, na.rm = TRUE)  # should be <= n_completed, ideally close to it
+
+metrics_complete <- pts_sf_subset_350 %>% left_join(wide_check, by = "point_id")
+na_rows <- metrics_complete[is.na(metrics_complete$shape_mn),]
 
 
 # pland_full_check <- run_batched(610, pts_sf_all, thornscrub_full, "lsm_c_pland", batch_size)
@@ -797,6 +1046,32 @@ wrap_plots(plot_list_ed, ncol = 3)
 
 # sum(is.na(pland_values2$focal_mean))
 # summary(pland_values2$focal_mean)
+
+# ## --- Create subsample --- ##
+# set.seed(1)
+# subsample_pooled <- pts_sf_all %>%
+#   st_drop_geometry() %>%
+#   mutate(row_id = row_number()) %>%
+#   group_by(state, case_) %>%
+#   slice_sample(prop = 0.10) %>%  # 10% stratified by state and used/available
+#   ungroup() %>%
+#   pull(row_id)
+
+# pts_sf_subsample <- pts_sf_all[subsample_pooled, ]
+# nrow(pts_sf_subsample)  # sanity check on resulting size
+# table(pts_sf_subsample$state, pts_sf_subsample$case_)  # confirm proportions preserved
+
+# extraction_list <- list()
+# for (nm in names(radii_test)) {
+#   cat("Starting:", nm, "radius =", radii_test[[nm]], "at", format(Sys.time()), "\n")
+#   extraction_list[[nm]] <- run_batched(radii_test[[nm]], pts_sf_subsample, thornscrub_cropped, class_metrics, batch_size)
+#   saveRDS(extraction_list, "output/objects/radii_variation_test_subsample.rds")
+#   cat("Completed:", nm, "at", format(Sys.time()), "\n\n")
+# }
+
+# extraction_wide <- lapply(extraction_list, function(x) {
+# x %>% select(point_id, metric, value) %>% pivot_wider(names_from = metric, values_from = value)
+# })
 
 
 
